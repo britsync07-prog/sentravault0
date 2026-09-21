@@ -1,0 +1,89 @@
+AHS Vault - UK Enterprise Ready Documents Checklist (71 items)
+B2B SaaS, you-host relay + BYO Drive, Finance + NHS + Gov
+
+1. Company docs
+1. Companies House Incorporation Certificate + Confirmation Statement + PSC register
+2. Articles of Association + Board minutes
+3. IP Assignment Agreements (all contributors -> Ltd)
+4. UKIPO Trademark Certificate - AHS Vault / BritSync
+5. HMRC VAT registration + Corporation Tax reference
+6. Professional Indemnity Insurance Certificate (2-5M)
+7. Cyber Insurance Certificate
+
+2. Licenses
+8. LICENSE file in repo (proprietary commercial - current MIT badge is dead link, no file exists)
+9. End User Licence Agreement (EULA) - desktop + mobile
+10. SaaS Master Services Agreement (MSA) + Order Form
+11. Service Level Agreement (SLA) - uptime, support hours, RPO/RTO
+12. Acceptable Use Policy
+13. Third-Party Notices / NOTICE file + SBOM (CycloneDX/SPDX) per component
+14. EV Code Signing Certificate (Windows) + Apple Developer ID + Google Play App Signing
+15. TLS Certificate (public CA) for relay
+
+3. Data Protection docs - ICO / UK GDPR + Data Protection Act 2018
+16. ICO Data Controller Registration - fee + registration number
+17. External Privacy Notice + Cookie Policy (web app)
+18. Customer Data Processing Agreement (DPA) - Art.28
+19. Sub-processor List + Sub-DPAs (Google Drive, Google OAuth, GitHub, VPS host)
+20. Record of Processing Activities (ROPA) - Art.30
+21. Data Protection Impact Assessment (DPIA) - Art.35, mandatory for biometrics + vault + IMAP scanning
+22. Legitimate Interests Assessment (LIA) - for email shield scanning
+23. International Data Transfer Risk Assessment (TRA) + International Data Transfer Agreement (IDTA) - all US transfers
+24. Data Retention and Deletion Policy (devices / activity_logs / blobs / Drive blobs)
+25. Data Subject Rights (DSAR) Procedure
+26. Personal Data Breach Playbook - 72h ICO notification
+27. Data Protection Officer (DPO) appointment letter
+
+4. Security certificates
+28. Cyber Essentials Certificate
+29. Cyber Essentials Plus Certificate - audited
+30. ISO/IEC 27001:2022 Certificate + Statement of Applicability (SoA)
+31. ISO/IEC 27701 Certificate (privacy extension)
+32. SOC 2 Type II Report
+33. PSTI Act 2024 Statement of Compliance + vulnerability disclosure contact in SECURITY.md
+
+5. NHS / Gov permissions
+34. NHS Data Security and Protection Toolkit (DSPT) - assessed status
+35. NHS Digital Technology Assessment Criteria (DTAC) pack
+36. DCB0120 / DCB0160 Clinical Risk Management - Hazard Log + Clinical Safety Case + Clinical Safety Officer appointment
+37. G-Cloud / Digital Marketplace Listing (Crown Commercial Service) for gov sales
+38. UK Export Control (ECJU) Cryptography Assessment record - 5A002/5D002
+39. WCAG 2.2 AA Accessibility Audit + Accessibility Statement
+
+6. Inner docs - how it works
+40. Executive Whitepaper (2-page) + Cryptographic Design Spec (primitives, BIP-39, AES-256-GCM, X25519, Ed25519, P-256, PBKDF2, key lifecycle)
+41. System Architecture Document (C4 diagrams - desktop / backend / web / mobile)
+42. Data Flow Diagrams + Data Residency Map (UK relay eu-west-2, BYO Drive region, what server/Google sees)
+43. Threat Model (STRIDE + LINDDUN)
+44. API Specification (OpenAPI) + WebSocket Protocol Spec
+45. Database Schema + Key Management + Secrets Management spec
+46. Deployment / Production Runbook (docs/DEPLOYMENT.md - single source)
+47. Backup and Restore Plan + Recovery test log
+48. Logging and Audit Trail Spec
+49. Incident Response Plan
+50. Business Continuity / Disaster Recovery Plan
+51. SDLC + Change Management Policy
+52. Vulnerability Management Policy
+53. Information Security Policy suite (access control, HR, ops, comms, supplier)
+54. Complete Technical Documentation (to replace current single 60KB PDF)
+
+7. Commercial docs to show buyer
+55. Mutual NDA template (for pilots, pen-test sharing, CISO review)
+56. Security Pack / CAIQ + SIG Lite questionnaire (completed)
+57. Sub-processor + DPA pack + DPIA summary + IDTA copies
+58. Pen Test Executive Summary (<12 months) + Remediation retest letter
+59. Insurance certs + ICO number + PSTI statement + Accessibility statement
+60. BCP/DR summary (RPO/RTO) + Incident contacts + Support SLA
+61. Reference architecture slide + Demo tenant access + Pilot SOW + Exit / Data Return plan
+
+8. Test reports to show buyer
+62. Functional Test Report - unit/integration coverage + E2E (Playwright / Tauri driver / mobile)
+63. CREST / CHECK / TIGER Penetration Test Report - network + API + desktop + mobile (OWASP ASVS L2, MASVS)
+64. Cryptography Audit Report (independent)
+65. SAST + DAST + Dependency Scan (npm audit / cargo audit / govulncheck) + Secrets Scan (gitleaks) reports from CI
+66. Load / Soak Test Report (k6) + TLS/HSTS Scan (SSL Labs)
+67. Backup Restore Test Evidence + DR Failover Test Evidence
+68. Accessibility Audit Report (DAC-style, WCAG 2.2 AA)
+69. Usability / UAT Sign-off (finance + NHS users)
+70. Clinical Safety Case sign-off (NHS only)
+71. DSAR Drill log + Deletion Verification log (DB + Drive purge proof)

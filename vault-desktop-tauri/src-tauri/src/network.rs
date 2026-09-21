@@ -1,0 +1,190 @@
+use crate::SharedKey;
+use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
+use std::sync::atomic::Ordering;
+use tauri::{AppHandle, Emitter, Manager};
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+
+#[derive(Serialize, Deserialize, Debug)]
+struct WsMessage {
+    #[serde(rename = "type")]
+    msg_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pairing_nonce: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x_public_key: Option<String>,
+    /// AES-256 key encrypted for desktop X25519 public key (base64)
+    #[serde(skip_serializing_if = "Option::is_none", alias = "encrypted_blob")]
+    pub encrypted_key: Option<String>,
+}
+
+pub async fn connect_and_register(
+    app: AppHandle,
+    public_key: String,
+    pairing_nonce: String,
+    is_onboarded: bool,
+    x_secret: x25519_dalek::StaticSecret,
+) {
+    let url = crate::config::get_ws_url();
+    let mut retry_delay = std::time::Duration::from_secs(1);
+
+    println!("Ws: Starting connection loop for pk={} nonce={}", public_key, pairing_nonce);
+
+    loop {
+        println!("Ws: Attempting connection to {}...", url);
+
+        match connect_async(url.clone()).await {
+            Ok((ws_stream, _)) => {
+                println!("Ws: Connected successfully.");
+                retry_delay = std::time::Duration::from_secs(1);
+
+                let (mut write, mut read) = ws_stream.split();
+
+                // Wait a tiny bit for the connection to settle
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+                // 1. Send registration payload
+                let reg = WsMessage {
+                    msg_type: "desktop_register".to_string(),
+                    public_key: Some(public_key.clone()),
+                    pairing_nonce: Some(pairing_nonce.clone()),
+                    message: None,
+                    x_public_key: None,
+                    encrypted_key: None,
+                };
+
+                let reg_json = serde_json::to_string(&reg).unwrap();
+                println!("Ws: Sending registration: {}", reg_json);
+                if let Err(e) = write.send(Message::Text(reg_json.into())).await {
+                    eprintln!("Ws: Failed to send registration: {}", e);
+                    continue;
+                }
+
+                // 3. Client-side keepalive ping every 15s to prevent server idle disconnect
+                let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(15));
+                let _ = ping_interval.tick().await; // skip immediate first tick
+
+                // 2. Listen for messages
+                loop {
+                    tokio::select! {
+                        msg = read.next() => {
+                            match msg {
+                                Some(Ok(Message::Text(text))) => {
+                                    println!("Ws: Received raw text: {}", text);
+                                    match serde_json::from_str::<WsMessage>(&text) {
+                                        Ok(ws_msg) => {
+                                            handle_server_message(&app, ws_msg, is_onboarded, &x_secret).await;
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Ws: Failed to parse message: {}. Raw: {}", e, text);
+                                        }
+                                    }
+                                }
+                                Some(Ok(Message::Ping(p))) => {
+                                    let _ = write.send(Message::Pong(p)).await;
+                                }
+                                Some(Ok(Message::Close(_))) => {
+                                    println!("Ws: Server sent close frame.");
+                                    break;
+                                }
+                                Some(Ok(m)) => {
+                                    println!("Ws: Received non-text message: {:?}", m);
+                                }
+                                Some(Err(e)) => {
+                                    eprintln!("Ws: Read error: {}", e);
+                                    break;
+                                }
+                                None => {
+                                    println!("Ws: Stream ended.");
+                                    break;
+                                }
+                            }
+                        }
+                        _ = ping_interval.tick() => {
+                            let _ = write.send(Message::Ping(Vec::new())).await;
+                        }
+                    }
+                }
+                println!("Ws: Connection closed. Reconnecting...");
+            }
+            Err(e) => {
+                eprintln!(
+                    "Ws: Connection failed: {}. Retrying in {:?}...",
+                    e, retry_delay
+                );
+            }
+        }
+
+        tokio::time::sleep(retry_delay).await;
+        retry_delay = std::cmp::min(retry_delay * 2, std::time::Duration::from_secs(30));
+    }
+}
+
+async fn handle_server_message(
+    app: &AppHandle,
+    ws_msg: WsMessage,
+    _is_onboarded: bool,
+    x_secret: &x25519_dalek::StaticSecret,
+) {
+    println!("Ws: Received message type: {}", ws_msg.msg_type);
+    
+    if ws_msg.msg_type == "unlock_approved" || ws_msg.msg_type == "push_relay" {
+        if let Some(enc_key) = &ws_msg.encrypted_key {
+            if enc_key == "WAKE_UP_BIOMETRIC" {
+                println!("Ws: Biometric wake-up received (no-op for desktop)");
+                return;
+            }
+
+            println!("Ws: Processing Magic Unlock signal");
+            match crate::crypto::decrypt_relayed_key(enc_key.clone(), x_secret) {
+                Ok(key_bytes) => {
+                    let key_state = app.state::<SharedKey>().inner().clone();
+                    if let Ok(mut storage) = key_state.write() {
+                        *storage = Some((key_bytes, None));
+                    }
+
+                    if crate::PENDING_MASTER_KEY_REVEAL.load(Ordering::SeqCst) {
+                        crate::PENDING_MASTER_KEY_REVEAL.store(false, Ordering::SeqCst);
+                        if let Ok(config_dir) = app.path().app_config_dir() {
+                            let config_path = config_dir.join("onboarding.json");
+                            if let Ok(content) = std::fs::read_to_string(&config_path) {
+                                if let Ok(config) = serde_json::from_str::<crate::OnboardingConfig>(&content) {
+                                    if let Some(mnemonic) = config.mnemonic {
+                                        let _ = app.emit("master-key-revealed", mnemonic);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        let _ = app.emit("vault-do-mount", ());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Ws: Failed to decrypt relayed key: {}", e);
+                    if let Err(emit_err) = app.emit("security-error", format!("Key Decryption Failed: {}", e)) {
+                        eprintln!("Ws: Critical - Failed to emit security-error: {}", emit_err);
+                    }
+                }
+            }
+        } else {
+            println!("Ws: Processing Pairing Success signal");
+            let payload = serde_json::json!({
+                "public_key": ws_msg.public_key,
+                "x_public_key": ws_msg.x_public_key,
+            });
+            if let Err(e) = app.emit("pairing-success", payload) {
+                eprintln!("Ws: FAILED to emit pairing-success: {}", e);
+            } else {
+                println!("Ws: Successfully emitted pairing-success to frontend");
+            }
+        }
+    } else if ws_msg.msg_type == "connection_established" {
+        println!("Ws: Connection confirmed by server.");
+    } else {
+        println!("Ws: Unhandled message type: {}", ws_msg.msg_type);
+    }
+}

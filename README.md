@@ -426,5 +426,8 @@ MIT License — see [LICENSE](LICENSE) for details.
 - [Complete Project Documentation](docs/AHS_Vault_Complete_Documentation.pdf) — Full technical reference (PDF)
 - [Project Overview](PROJECT.md) — Architecture and milestones
 - [Production Setup Guide](PRODUCTION_SETUP_GUIDE_V2.md) — Deployment instructions
-#   s e n t r a v a u l t 0  
- 
+
+---
+
+*SentraVault — Zero-Knowledge Biometric Vault*
+  

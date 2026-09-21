@@ -1,0 +1,84 @@
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.hprof
+*.dmp
+
+# Logs
+*.log
+logs.txt
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Node & Frontend
+node_modules/
+dist/
+.vite/
+.turbo/
+
+# Rust
+target/
+**/*.rs.bk
+
+# Go
+vault-backend-go/vault-server
+vault-backend-go/main
+vault-backend-go/api
+vault-backend-go/api.exe
+vault-backend-go/.env
+vault-backend-go/cmd/api/api
+vault-backend-go/cmd/api/api.exe
+vault-backend-go/cmd/deep_test/deep_test
+vault-backend-go/cmd/deep_test/deep_test.exe
+vault-backend-go/cmd/verify/verify
+vault-backend-go/cmd/verify/verify.exe
+vault-backend-go/cmd/ws_test/ws_test
+vault-backend-go/cmd/ws_test/ws_test.exe
+
+# Android / Mobile
+.gradle/
+local.properties
+**/build/
+.idea/
+*.iml
+captures/
+.externalNativeBuild
+.cxx
+google-services.json
+*.keystore
+*.jks
+*.apk
+*.aab
+
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+
+# Backups & archives
+vault_4containers*
+*.tar.gz
+*.tar
+
+# Local release artifacts & scratch outputs
+latest_release.json
+release.json
+
+# JDK
+jdk17/
+jdk17.zip
+
+# IDEs
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
