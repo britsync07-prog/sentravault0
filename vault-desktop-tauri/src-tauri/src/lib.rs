@@ -38,6 +38,44 @@ pub struct MobileDevice {
     pub x_public_key: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
+pub struct LicenseInfo {
+    pub license_key: String,
+    pub role: String, // "admin" | "user"
+    pub company_name: String,
+    pub tier: String,
+    pub tier_display: String,
+    pub setup_fee_gbp: f64,
+    pub per_user_monthly_gbp: f64,
+    pub max_seats: i32,
+    pub active_seats: i32,
+    pub admin_count: i32,
+    pub user_count: i32,
+    pub user_name: String,
+    pub user_email: String,
+    pub device_id: String,
+    pub seat_id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[allow(dead_code)]
+struct BackendVerifyResponse {
+    valid: bool,
+    message: String,
+    license_id: Option<String>,
+    role: Option<String>,
+    company_name: Option<String>,
+    tier: Option<String>,
+    tier_display: Option<String>,
+    setup_fee_gbp: Option<f64>,
+    per_user_monthly_gbp: Option<f64>,
+    max_seats: Option<i32>,
+    active_seats: Option<i32>,
+    admin_count: Option<i32>,
+    user_count: Option<i32>,
+    seat_id: Option<String>,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
 #[serde(default)]
 pub struct OnboardingConfig {
@@ -52,6 +90,7 @@ pub struct OnboardingConfig {
     pub last_sync: Option<u64>,
     pub google_access_token: Option<String>,
     pub google_refresh_token: Option<String>,
+    pub license: Option<LicenseInfo>,
 }
 
 #[tauri::command]
@@ -249,6 +288,177 @@ fn get_config_path(app: &AppHandle) -> PathBuf {
         .app_config_dir()
         .expect("Failed to get config dir");
     get_config_path_internal(path)
+}
+
+fn is_license_active_internal(app: &AppHandle) -> bool {
+    let path = get_config_path(app);
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(config) = serde_json::from_str::<OnboardingConfig>(&content) {
+            return config.license.is_some();
+        }
+    }
+    false
+}
+
+#[tauri::command]
+fn get_saved_license(app: AppHandle) -> Result<Option<LicenseInfo>, String> {
+    let path = get_config_path(&app);
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(config) = serde_json::from_str::<OnboardingConfig>(&content) {
+            return Ok(config.license);
+        }
+    }
+    Ok(None)
+}
+
+#[tauri::command]
+async fn verify_and_save_license(
+    app: AppHandle,
+    license_key: String,
+    name: String,
+    email: String,
+) -> Result<LicenseInfo, String> {
+    let path = get_config_path(&app);
+    let mut config: OnboardingConfig = if let Ok(content) = std::fs::read_to_string(&path) {
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        OnboardingConfig::default()
+    };
+
+    let device_id = match &config.desktop_signing_key {
+        Some(pk) => pk.clone(),
+        None => {
+            let (_, pk) = get_or_create_signing_key_at(path.clone());
+            pk
+        }
+    };
+
+    let backend_url = crate::config::get_backend_url();
+    let client = reqwest::Client::new();
+    let res = client
+        .post(format!("{}/api/license/verify-and-activate", backend_url))
+        .json(&serde_json::json!({
+            "license_key": license_key.trim(),
+            "name": name.trim(),
+            "email": email.trim(),
+            "device_id": device_id,
+            "device_os": "Windows"
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    let status = res.status();
+    let body_text = res.text().await.unwrap_or_default();
+    let resp: BackendVerifyResponse = serde_json::from_str(&body_text)
+        .map_err(|_| format!("Server error ({}): {}", status, body_text))?;
+
+    if !resp.valid {
+        return Err(resp.message);
+    }
+
+    let lic = LicenseInfo {
+        license_key: license_key.trim().to_string(),
+        role: resp.role.unwrap_or_else(|| "user".to_string()),
+        company_name: resp.company_name.unwrap_or_default(),
+        tier: resp.tier.unwrap_or_default(),
+        tier_display: resp.tier_display.unwrap_or_default(),
+        setup_fee_gbp: resp.setup_fee_gbp.unwrap_or(0.0),
+        per_user_monthly_gbp: resp.per_user_monthly_gbp.unwrap_or(0.0),
+        max_seats: resp.max_seats.unwrap_or(1),
+        active_seats: resp.active_seats.unwrap_or(1),
+        admin_count: resp.admin_count.unwrap_or(0),
+        user_count: resp.user_count.unwrap_or(0),
+        user_name: name.trim().to_string(),
+        user_email: email.trim().to_string(),
+        device_id: device_id.clone(),
+        seat_id: resp.seat_id.unwrap_or_default(),
+    };
+
+    config.license = Some(lic.clone());
+    if let Ok(updated_json) = serde_json::to_string(&config) {
+        let _ = std::fs::write(&path, updated_json);
+    }
+
+    Ok(lic)
+}
+
+#[tauri::command]
+async fn fetch_admin_dashboard(app: AppHandle) -> Result<serde_json::Value, String> {
+    let path = get_config_path(&app);
+    let config: OnboardingConfig = match std::fs::read_to_string(&path) {
+        Ok(c) => serde_json::from_str(&c).map_err(|e| e.to_string())?,
+        Err(_) => return Err("License configuration not found".to_string()),
+    };
+
+    let license = config.license.ok_or("No active license found")?;
+    if license.role != "admin" {
+        return Err("Access denied: Admin license key required to view company dashboard".to_string());
+    }
+
+    let backend_url = crate::config::get_backend_url();
+    let client = reqwest::Client::new();
+    let res = client
+        .get(format!("{}/api/license/admin/overview", backend_url))
+        .header("X-Admin-License-Key", &license.license_key)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    if !res.status().is_success() {
+        let text = res.text().await.unwrap_or_default();
+        return Err(format!("Failed to fetch admin overview: {}", text));
+    }
+
+    let json_val: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    Ok(json_val)
+}
+
+#[tauri::command]
+async fn revoke_user_seat(app: AppHandle, seat_id: String) -> Result<String, String> {
+    let path = get_config_path(&app);
+    let config: OnboardingConfig = match std::fs::read_to_string(&path) {
+        Ok(c) => serde_json::from_str(&c).map_err(|e| e.to_string())?,
+        Err(_) => return Err("License configuration not found".to_string()),
+    };
+
+    let license = config.license.ok_or("No active license found")?;
+    if license.role != "admin" {
+        return Err("Access denied: Admin license required".to_string());
+    }
+
+    let backend_url = crate::config::get_backend_url();
+    let client = reqwest::Client::new();
+    let res = client
+        .post(format!("{}/api/license/admin/revoke-seat", backend_url))
+        .header("X-Admin-License-Key", &license.license_key)
+        .json(&serde_json::json!({
+            "seat_id": seat_id
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    if !res.status().is_success() {
+        let text = res.text().await.unwrap_or_default();
+        return Err(format!("Revocation failed: {}", text));
+    }
+
+    Ok("Seat successfully revoked".to_string())
+}
+
+#[tauri::command]
+fn clear_saved_license(app: AppHandle) -> Result<(), String> {
+    let path = get_config_path(&app);
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(mut config) = serde_json::from_str::<OnboardingConfig>(&content) {
+            config.license = None;
+            if let Ok(s) = serde_json::to_string(&config) {
+                let _ = std::fs::write(&path, s);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -848,6 +1058,9 @@ async fn mount_vault(
     key_state: tauri::State<'_, SharedKey>,
     blob_id_state: tauri::State<'_, SharedBlobId>,
 ) -> Result<(), String> {
+    if !is_license_active_internal(&app) {
+        return Err("A valid commercial license is required before mounting the vault.".to_string());
+    }
     mount_vault_internal(app, key_state.inner().clone(), blob_id_state.inner().clone()).await
 }
 
@@ -858,6 +1071,9 @@ async fn unlock_offline(
     key_state: tauri::State<'_, SharedKey>,
     blob_id_state: tauri::State<'_, SharedBlobId>,
 ) -> Result<(), String> {
+    if !is_license_active_internal(&app) {
+        return Err("A valid commercial license is required before mounting the vault.".to_string());
+    }
     crypto::set_master_key_from_seed(mnemonic, key_state.clone())?;
     mount_vault_internal(app, key_state.inner().clone(), blob_id_state.inner().clone()).await
 }
@@ -1623,7 +1839,12 @@ pub fn run() {
             start_restoration_download,
             oauth::login_google,
             is_google_connected,
-            save_google_tokens
+            save_google_tokens,
+            get_saved_license,
+            verify_and_save_license,
+            fetch_admin_dashboard,
+            revoke_user_seat,
+            clear_saved_license
         ])
         .setup(|app| {
             #[cfg(target_os = "windows")]

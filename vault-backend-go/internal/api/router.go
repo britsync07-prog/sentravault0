@@ -27,7 +27,7 @@ func NewRouter(h *Handler) *chi.Mux {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Desktop-PK", "X-Signature", "X-Google-Token"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Desktop-PK", "X-Signature", "X-Google-Token", "X-Admin-License-Key"},
 		ExposedHeaders:   []string{"Link"},
 		AllowCredentials: false,
 		MaxAge:           300,
@@ -35,6 +35,14 @@ func NewRouter(h *Handler) *chi.Mux {
 
 	r.Get("/health", h.HealthCheck)
 	r.Get("/api/update", h.HandleUpdate)
+
+	// --- Enterprise License System ---
+	r.Route("/api/license", func(r chi.Router) {
+		r.Post("/verify-and-activate", h.VerifyAndActivateLicense)
+		r.Post("/check-status", h.CheckLicenseSeatStatus)
+		r.Get("/admin/overview", h.GetAdminDashboardOverview)
+		r.Post("/admin/revoke-seat", h.RevokeAdminSeat)
+	})
 
 	r.Route("/api/vault", func(r chi.Router) {
 		r.Post("/upload", h.UploadVault)

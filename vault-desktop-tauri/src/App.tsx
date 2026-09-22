@@ -12,8 +12,11 @@ import { Shield, Smartphone, ArrowRight, CheckCircle2 } from "lucide-react";
 import { MasterKeyScreen } from "./components/MasterKeyScreen";
 import { TitleBar } from "./components/TitleBar";
 import { RestorationProgress } from "./components/RestorationProgress";
+import { LicenseGate, LicenseInfo } from "./components/LicenseGate";
 
 function App() {
+  const [licenseInfo, setLicenseInfo] = useState<LicenseInfo | null>(null);
+  const [isCheckingLicense, setIsCheckingLicense] = useState(true);
   const [isOnboarded, setIsOnboarded] = useState<boolean | null>(null);
   const [pairingPayload, setPairingPayload] = useState<string | null>(null);
   const [mobileKeys, setMobileKeys] = useState<{ public_key: string; x_public_key: string } | null>(null);
@@ -183,6 +186,19 @@ function App() {
   };
 
   useEffect(() => {
+    // 0. Check Saved License
+    invoke<LicenseInfo | null>("get_saved_license")
+      .then((lic) => {
+        setLicenseInfo(lic);
+      })
+      .catch((err) => {
+        console.warn("Failed to check saved license:", err);
+        setLicenseInfo(null);
+      })
+      .finally(() => {
+        setIsCheckingLicense(false);
+      });
+
     // 1. Check Onboarding Status
     invoke<boolean>("check_onboarding").then((status) => {
       setIsOnboarded(status);
@@ -252,7 +268,27 @@ function App() {
     }
   }, [unlocked]);
 
-  if (isOnboarded === null) return null;
+  if (isCheckingLicense || isOnboarded === null) {
+    return (
+      <div className="bg-pure min-h-screen text-text-primary flex items-center justify-center pt-10">
+        <TitleBar />
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+          <p className="text-[11px] font-mono tracking-wider uppercase text-neutral-500">Initializing Vault Runtime...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Unbypassable First-Launch License Gate
+  if (!licenseInfo) {
+    return (
+      <div className="bg-pure min-h-screen text-text-primary selection:bg-cyan/30 pt-10">
+        <TitleBar />
+        <LicenseGate onSuccess={(lic) => setLicenseInfo(lic)} />
+      </div>
+    );
+  }
 
   return (
     <div className="bg-pure min-h-screen text-text-primary selection:bg-cyan/30 pt-10">
@@ -446,6 +482,8 @@ function App() {
               revealedMnemonic={revealedMnemonic}
               onClearRevealedMnemonic={handleClearRevealedMnemonic}
               isRevealing={isRevealing}
+              licenseInfo={licenseInfo}
+              onLicenseUpdated={setLicenseInfo}
             />
           </motion.div>
         )}

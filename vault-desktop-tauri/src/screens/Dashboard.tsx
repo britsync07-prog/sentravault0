@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Shield, LayoutDashboard, Database, Activity, Smartphone, Key, Settings, Lock, Bell, HardDrive, Cpu, Sun, Moon, Info } from "lucide-react";
+import { Shield, LayoutDashboard, Database, Activity, Smartphone, Key, Settings, Lock, Bell, HardDrive, Cpu, Sun, Moon, Info, Building2, Copy, Check } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { VaultExplorer } from "../components/VaultExplorer";
@@ -7,6 +7,8 @@ import { SecurityCenter } from "../components/SecurityCenter";
 import { RecoveryCenter } from "../components/RecoveryCenter";
 import { AutoLockSettings } from "../components/AutoLockSettings";
 import { DeviceManagement } from "../components/DeviceManagement";
+import { EnterpriseAdminDashboard } from "../components/EnterpriseAdminDashboard";
+import { LicenseInfo } from "../components/LicenseGate";
 import { getBackendUrl } from "../config";
 
 interface DashboardProps {
@@ -17,12 +19,24 @@ interface DashboardProps {
   revealedMnemonic: string | null;
   onClearRevealedMnemonic: () => void;
   isRevealing: boolean;
+  licenseInfo?: LicenseInfo | null;
+  onLicenseUpdated?: (lic: LicenseInfo | null) => void;
 }
 
-type TabType = 'dashboard' | 'vault' | 'shield' | 'devices' | 'recovery' | 'settings';
+type TabType = 'dashboard' | 'vault' | 'shield' | 'devices' | 'recovery' | 'admin' | 'settings';
 
-export const Dashboard: React.FC<DashboardProps> = ({ onLock, theme, onToggleTheme, onRevealMasterKey, revealedMnemonic, onClearRevealedMnemonic }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ 
+  onLock, 
+  theme, 
+  onToggleTheme, 
+  onRevealMasterKey, 
+  revealedMnemonic, 
+  onClearRevealedMnemonic,
+  licenseInfo,
+  onLicenseUpdated
+}) => {
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
+  const [copiedLicKey, setCopiedLicKey] = useState(false);
   const [stats, setStats] = useState({
     filesProtected: 0,
     threatsBlocked: 0,
@@ -155,8 +169,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLock, theme, onToggleThe
             icon={<Key />} 
             label="Recovery" 
             active={activeTab === 'recovery'} 
-            onClick={() => setActiveTab('recovery')}
+            onClick={() => setActiveTab('recovery')} 
           />
+          {licenseInfo?.role === 'admin' && (
+            <NavItem 
+              icon={<Building2 />} 
+              label="Admin Console" 
+              active={activeTab === 'admin'} 
+              onClick={() => setActiveTab('admin')} 
+            />
+          )}
         </nav>
 
         <div className="mt-auto flex flex-col gap-4 w-full px-4">
@@ -354,10 +376,102 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLock, theme, onToggleThe
                      </div>
                   </div>
                </div>
+
+                {/* Enterprise License Information Card */}
+                {licenseInfo && (
+                  <div className="p-6 rounded-3xl bg-matte border border-border-primary space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-400">
+                          <Building2 size={20} />
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-bold text-text-primary uppercase tracking-wider">Enterprise License & Workstation</h3>
+                          <p className="text-xs text-text-secondary">Cryptographically authenticated endpoint credentials</p>
+                        </div>
+                      </div>
+                      <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold tracking-wider uppercase ${
+                        licenseInfo.role === 'admin' 
+                          ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/30' 
+                          : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                      }`}>
+                        {licenseInfo.role === 'admin' ? 'Administrator' : 'Standard User'}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 text-xs">
+                      <div className="p-3.5 rounded-xl bg-neutral-950/60 border border-border-primary/60 flex flex-col justify-between">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-text-tertiary">Registered Entity</span>
+                        <span className="text-sm font-semibold text-text-primary mt-1">{licenseInfo.company_name}</span>
+                        <span className="text-[11px] text-text-secondary mt-0.5">{licenseInfo.tier_display}</span>
+                      </div>
+
+                      <div className="p-3.5 rounded-xl bg-neutral-950/60 border border-border-primary/60 flex flex-col justify-between">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-text-tertiary">Workstation Operator</span>
+                        <span className="text-sm font-semibold text-text-primary mt-1">{licenseInfo.user_name}</span>
+                        <span className="text-[11px] text-text-secondary mt-0.5 font-mono">{licenseInfo.user_email}</span>
+                      </div>
+
+                      <div className="p-3.5 rounded-xl bg-neutral-950/60 border border-border-primary/60 flex flex-col justify-between">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-text-tertiary">Seat Allocation</span>
+                        <div className="flex items-baseline gap-1 mt-1">
+                          <span className="text-base font-bold text-text-primary">{licenseInfo.active_seats}</span>
+                          <span className="text-xs text-text-tertiary">/ {licenseInfo.max_seats} Max Seats</span>
+                        </div>
+                        <span className="text-[10px] text-emerald-400 mt-0.5">Endpoint Active</span>
+                      </div>
+
+                      <div className="p-3.5 rounded-xl bg-neutral-950/60 border border-border-primary/60 flex flex-col justify-between">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-text-tertiary">License Key</span>
+                        <div className="flex items-center justify-between mt-1">
+                          <span className="font-mono text-xs text-neutral-300">
+                            {licenseInfo.license_key.length > 8 
+                              ? `${licenseInfo.license_key.slice(0, 7)}••••••••` 
+                              : licenseInfo.license_key}
+                          </span>
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(licenseInfo.license_key);
+                              setCopiedLicKey(true);
+                              setTimeout(() => setCopiedLicKey(false), 2000);
+                            }}
+                            className="p-1 hover:bg-neutral-800 rounded text-neutral-400 hover:text-white transition cursor-pointer"
+                            title="Copy full key"
+                          >
+                            {copiedLicKey ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
+                        <span className="text-[10px] text-neutral-500 mt-0.5 font-mono truncate" title={licenseInfo.device_id}>
+                          ID: {licenseInfo.device_id}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-2 border-t border-border-primary/60 text-xs">
+                      <span className="text-[11px] text-text-tertiary">
+                        Need to switch licenses or register another seat?
+                      </span>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await invoke("clear_saved_license");
+                            onLicenseUpdated?.(null);
+                          } catch (err) {
+                            console.error("Failed to deregister license:", err);
+                          }
+                        }}
+                        className="text-[11px] text-red-400 hover:text-red-300 transition cursor-pointer hover:underline"
+                      >
+                        Deregister Workstation
+                      </button>
+                    </div>
+                  </div>
+                )}
             </div>
           )}
 
           {activeTab === 'devices' && <DeviceManagement />}
+          {activeTab === 'admin' && <EnterpriseAdminDashboard licenseInfo={licenseInfo ?? null} />}
         </div>
       </main>
     </div>

@@ -82,6 +82,33 @@ func (db *Database) InitSchema(ctx context.Context) error {
 			size_bytes BIGINT NOT NULL,
 			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE TABLE IF NOT EXISTS company_licenses (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			company_name TEXT NOT NULL,
+			tier TEXT NOT NULL,
+			tier_display TEXT NOT NULL,
+			setup_fee_gbp NUMERIC(10, 2) NOT NULL,
+			per_user_monthly_gbp NUMERIC(10, 2) NOT NULL,
+			max_seats INT NOT NULL,
+			admin_key TEXT UNIQUE NOT NULL,
+			user_key TEXT UNIQUE NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS license_seats (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			license_id UUID REFERENCES company_licenses(id) ON DELETE CASCADE,
+			role TEXT NOT NULL,
+			name TEXT NOT NULL,
+			email TEXT NOT NULL,
+			device_id TEXT NOT NULL,
+			device_os TEXT NOT NULL DEFAULT 'Windows',
+			status TEXT NOT NULL DEFAULT 'active',
+			storage_used_bytes BIGINT NOT NULL DEFAULT 0,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			last_active TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(license_id, email, device_id)
+		)`,
 	}
 
 	for _, q := range queries {
@@ -89,6 +116,20 @@ func (db *Database) InitSchema(ctx context.Context) error {
 			return fmt.Errorf("failed to execute schema query: %v", err)
 		}
 	}
+
+	// Seed default enterprise licenses if none exist
+	var count int
+	_ = db.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM company_licenses").Scan(&count)
+	if count == 0 {
+		seedQuery := `INSERT INTO company_licenses 
+			(company_name, tier, tier_display, setup_fee_gbp, per_user_monthly_gbp, max_seats, admin_key, user_key)
+			VALUES 
+			('Acme Health Corp', 'enterprise_1_5', 'Enterprise 1–5 seats (£6,000 one-time + £9/user/mo)', 6000.00, 9.00, 5, 'SV-ADM-ACME-5527', 'SV-USR-ACME-5527'),
+			('NHS Trust Alliance', 'enterprise_6_50', 'Enterprise 6–50 seats (£9,000 one-time + £9/user/mo)', 9000.00, 9.00, 25, 'SV-ADM-NHS-7738', 'SV-USR-NHS-7738'),
+			('Solo Practice', 'individual', 'Individual (£2,000 one-time + £12/mo)', 2000.00, 12.00, 1, 'SV-ADM-SOLO-1029', 'SV-USR-SOLO-1029')`
+		_, _ = db.Pool.Exec(ctx, seedQuery)
+	}
+
 	return nil
 }
 
@@ -218,3 +259,257 @@ func (db *Database) Close() {
 func (db *Database) Ping(ctx context.Context) error {
 	return db.Pool.Ping(ctx)
 }
+
+// --- Enterprise License Management ---
+
+type SeatActivationResult struct {
+	Valid             bool    `json:"valid"`
+	Message           string  `json:"message"`
+	LicenseID         string  `json:"license_id"`
+	Role              string  `json:"role"` // "admin" | "user"
+	CompanyName       string  `json:"company_name"`
+	Tier              string  `json:"tier"`
+	TierDisplay       string  `json:"tier_display"`
+	SetupFeeGBP       float64 `json:"setup_fee_gbp"`
+	PerUserMonthlyGBP float64 `json:"per_user_monthly_gbp"`
+	MaxSeats          int     `json:"max_seats"`
+	ActiveSeats       int     `json:"active_seats"`
+	AdminCount        int     `json:"admin_count"`
+	UserCount         int     `json:"user_count"`
+	SeatID            string  `json:"seat_id"`
+}
+
+type AdminDashboardSeat struct {
+	ID             string `json:"id"`
+	Role           string `json:"role"`
+	Name           string `json:"name"`
+	Email          string `json:"email"`
+	DeviceID       string `json:"device_id"`
+	DeviceOS       string `json:"device_os"`
+	Status         string `json:"status"`
+	StorageUsedStr string `json:"storage_used_str"`
+	StorageBytes   int64  `json:"storage_bytes"`
+	LastActive     string `json:"last_active"`
+	CreatedAt      string `json:"created_at"`
+}
+
+type AdminDashboardView struct {
+	CompanyName       string               `json:"company_name"`
+	Tier              string               `json:"tier"`
+	TierDisplay       string               `json:"tier_display"`
+	SetupFeeGBP       float64              `json:"setup_fee_gbp"`
+	PerUserMonthlyGBP float64              `json:"per_user_monthly_gbp"`
+	MonthlyRunRateGBP float64              `json:"monthly_run_rate_gbp"`
+	MaxSeats          int                  `json:"max_seats"`
+	TotalActiveSeats  int                  `json:"total_active_seats"`
+	AdminCount        int                  `json:"admin_count"`
+	UserCount         int                  `json:"user_count"`
+	RemainingSeats    int                  `json:"remaining_seats"`
+	Seats             []AdminDashboardSeat `json:"seats"`
+}
+
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+func (db *Database) VerifyAndActivateSeat(ctx context.Context, key, name, email, deviceID, deviceOS string) (*SeatActivationResult, error) {
+	var licenseID, companyName, tier, tierDisplay, adminKey, userKey, status string
+	var setupFee, perUserFee float64
+	var maxSeats int
+
+	err := db.Pool.QueryRow(ctx, `SELECT id, company_name, tier, tier_display, setup_fee_gbp, per_user_monthly_gbp, max_seats, admin_key, user_key, status
+		FROM company_licenses 
+		WHERE (admin_key = $1 OR user_key = $1)`, key).Scan(
+		&licenseID, &companyName, &tier, &tierDisplay, &setupFee, &perUserFee, &maxSeats, &adminKey, &userKey, &status,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &SeatActivationResult{Valid: false, Message: "The license key provided is invalid. Please enter a valid license key."}, nil
+		}
+		return nil, err
+	}
+
+	if status != "active" {
+		return &SeatActivationResult{Valid: false, Message: "This company license is suspended or expired. Please contact your administrator."}, nil
+	}
+
+	role := "user"
+	if key == adminKey {
+		role = "admin"
+	}
+
+	// Check if this user/device already has an allocated seat
+	var seatID, existingStatus string
+	err = db.Pool.QueryRow(ctx, `SELECT id, status FROM license_seats WHERE license_id = $1 AND email = $2 AND device_id = $3`,
+		licenseID, email, deviceID).Scan(&seatID, &existingStatus)
+
+	if err == nil {
+		if existingStatus == "revoked" {
+			return &SeatActivationResult{Valid: false, Message: "Your seat access has been revoked by your company administrator."}, nil
+		}
+		// Refresh active timestamp, name, role and OS
+		_, _ = db.Pool.Exec(ctx, `UPDATE license_seats SET last_active = CURRENT_TIMESTAMP, name = $1, device_os = $2, role = $3 WHERE id = $4`,
+			name, deviceOS, role, seatID)
+	} else if errors.Is(err, pgx.ErrNoRows) {
+		// New seat request: Check current seat quota across Admins and Users
+		var activeSeats, adminCount, userCount int
+		err = db.Pool.QueryRow(ctx, `SELECT 
+			COUNT(*),
+			COUNT(*) FILTER (WHERE role = 'admin'),
+			COUNT(*) FILTER (WHERE role = 'user')
+			FROM license_seats 
+			WHERE license_id = $1 AND status = 'active'`, licenseID).Scan(&activeSeats, &adminCount, &userCount)
+		if err != nil {
+			return nil, err
+		}
+
+		if activeSeats >= maxSeats {
+			return &SeatActivationResult{
+				Valid:   false,
+				Message: fmt.Sprintf("All %d seats for %s have been allocated (%d Admins, %d Users). Contact your administrator to expand your license.", maxSeats, companyName, adminCount, userCount),
+			}, nil
+		}
+
+		// Insert new seat
+		err = db.Pool.QueryRow(ctx, `INSERT INTO license_seats (license_id, role, name, email, device_id, device_os, status)
+			VALUES ($1, $2, $3, $4, $5, $6, 'active')
+			RETURNING id`, licenseID, role, name, email, deviceID, deviceOS).Scan(&seatID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, err
+	}
+
+	// Fetch current counts
+	var activeSeats, adminCount, userCount int
+	_ = db.Pool.QueryRow(ctx, `SELECT 
+		COUNT(*),
+		COUNT(*) FILTER (WHERE role = 'admin'),
+		COUNT(*) FILTER (WHERE role = 'user')
+		FROM license_seats 
+		WHERE license_id = $1 AND status = 'active'`, licenseID).Scan(&activeSeats, &adminCount, &userCount)
+
+	return &SeatActivationResult{
+		Valid:             true,
+		Message:           "License verified and activated successfully.",
+		LicenseID:         licenseID,
+		Role:              role,
+		CompanyName:       companyName,
+		Tier:              tier,
+		TierDisplay:       tierDisplay,
+		SetupFeeGBP:       setupFee,
+		PerUserMonthlyGBP: perUserFee,
+		MaxSeats:          maxSeats,
+		ActiveSeats:       activeSeats,
+		AdminCount:        adminCount,
+		UserCount:         userCount,
+		SeatID:            seatID,
+	}, nil
+}
+
+func (db *Database) CheckSeatStatus(ctx context.Context, licenseID, email, deviceID string) (bool, error) {
+	var status string
+	err := db.Pool.QueryRow(ctx, `SELECT status FROM license_seats WHERE license_id = $1 AND email = $2 AND device_id = $3`,
+		licenseID, email, deviceID).Scan(&status)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return status == "active", nil
+}
+
+func (db *Database) GetAdminDashboardData(ctx context.Context, adminKey string) (*AdminDashboardView, error) {
+	var licenseID, companyName, tier, tierDisplay string
+	var setupFee, perUserFee float64
+	var maxSeats int
+
+	err := db.Pool.QueryRow(ctx, `SELECT id, company_name, tier, tier_display, setup_fee_gbp, per_user_monthly_gbp, max_seats 
+		FROM company_licenses 
+		WHERE admin_key = $1 AND status = 'active'`, adminKey).Scan(
+		&licenseID, &companyName, &tier, &tierDisplay, &setupFee, &perUserFee, &maxSeats,
+	)
+	if err != nil {
+		return nil, errors.New("unauthorized: invalid admin license key")
+	}
+
+	var activeSeats, adminCount, userCount int
+	_ = db.Pool.QueryRow(ctx, `SELECT 
+		COUNT(*),
+		COUNT(*) FILTER (WHERE role = 'admin'),
+		COUNT(*) FILTER (WHERE role = 'user')
+		FROM license_seats 
+		WHERE license_id = $1 AND status = 'active'`, licenseID).Scan(&activeSeats, &adminCount, &userCount)
+
+	rows, err := db.Pool.Query(ctx, `SELECT id, role, name, email, device_id, device_os, status, storage_used_bytes, last_active, created_at
+		FROM license_seats 
+		WHERE license_id = $1 
+		ORDER BY status ASC, role ASC, created_at ASC`, licenseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var seats []AdminDashboardSeat
+	for rows.Next() {
+		var s AdminDashboardSeat
+		var lastActive, createdAt time.Time
+		if err := rows.Scan(&s.ID, &s.Role, &s.Name, &s.Email, &s.DeviceID, &s.DeviceOS, &s.Status, &s.StorageBytes, &lastActive, &createdAt); err != nil {
+			return nil, err
+		}
+		s.LastActive = lastActive.Format(time.RFC339)
+		s.CreatedAt = createdAt.Format("2006-01-02")
+		s.StorageUsedStr = formatBytes(s.StorageBytes)
+		seats = append(seats, s)
+	}
+
+	monthlyRate := perUserFee * float64(activeSeats)
+	remaining := maxSeats - activeSeats
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	return &AdminDashboardView{
+		CompanyName:       companyName,
+		Tier:              tier,
+		TierDisplay:       tierDisplay,
+		SetupFeeGBP:       setupFee,
+		PerUserMonthlyGBP: perUserFee,
+		MonthlyRunRateGBP: monthlyRate,
+		MaxSeats:          maxSeats,
+		TotalActiveSeats:  activeSeats,
+		AdminCount:        adminCount,
+		UserCount:         userCount,
+		RemainingSeats:    remaining,
+		Seats:             seats,
+	}, nil
+}
+
+func (db *Database) RevokeSeat(ctx context.Context, adminKey, seatID string) error {
+	var licenseID string
+	err := db.Pool.QueryRow(ctx, `SELECT id FROM company_licenses WHERE admin_key = $1 AND status = 'active'`, adminKey).Scan(&licenseID)
+	if err != nil {
+		return errors.New("unauthorized: invalid admin license key")
+	}
+
+	tag, err := db.Pool.Exec(ctx, `UPDATE license_seats SET status = 'revoked' WHERE id = $1 AND license_id = $2`, seatID, licenseID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errors.New("seat not found or not belonging to this license")
+	}
+	return nil
+}
+
