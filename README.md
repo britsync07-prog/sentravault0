@@ -413,6 +413,13 @@ cd vault-web-auth && npm run dev
 cd vault-mobile-auth && ./gradlew assembleDebug
 ```
 
+## Contact
+
+- 📧 Email: [saimon@ascentraconsulting.co.uk](mailto:saimon@ascentraconsulting.co.uk)
+- 💼 LinkedIn: [Musfiqur Rahman Saimon](https://www.linkedin.com/in/musfiqur-rahman-saimon-a5994b3aa)
+- 🐙 GitHub: [@britsync07-prog](https://github.com/britsync07-prog)
+- 🌐 Portfolio: [brit-os.pages.dev](https://brit-os.pages.dev/)
+
 ---
 
 ## License
